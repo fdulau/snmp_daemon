@@ -74,9 +74,7 @@ if ( $opts{'h'} ) {
     print "\t -D \t\t detach and daemonize\n";
     print "\t -v \t\t print version and die\n";
     print "\t -k \t\t kill already running instance\n";
-    print "\t -K \t\t kill already running instance and restart\n";
     print "\n\t If the ENVIRONEMENT variable DEBUG is set, some debug info are printed on STDOUT\n";
-    print "\t\t a signal USR1 increase the debug level and loop when mas is reached (max=$MAX_DEBUG)\n";
     exit;
 }
 
