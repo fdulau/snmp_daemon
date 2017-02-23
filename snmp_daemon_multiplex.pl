@@ -58,7 +58,7 @@ my $MAX_TO_READ         = 1472;
 my $buffer;
 my $VERSION     = '4.07';
 my $EXP_NAME    = 'SNMP_DAEMON';
-my $CONFIG_FILE = '/opt/snmp_emul/daemon.conf';
+my $CONFIG_FILE = '/opt/snmp_emul/etc/daemon.conf';
 
 getopts( 'Dd:hr:l:vKkc:I:P:', \%opts );
 
