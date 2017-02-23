@@ -320,7 +320,7 @@ IO: while (1) {
                     my $oids_ref = fetch_tree( $request->{oid}, $type, $out1->{max_repetitions}, $out->{community}, $BASE );
                     say "OID=<" . Dumper($oids_ref) . ">" if ( $DEBUG > 3 );
                     say "PDU=" . Dumper($out1) if ( $DEBUG > 4 );
-                    my $var_binlist;
+                    my $var_binlist = '';
                     my %encode = (
                         version         => $out->{version},
                         community       => $out->{community},
@@ -475,7 +475,7 @@ sub fetch_tree {
     if ( $type eq 'SNMPBulkRequest' ) {
         say "next=<$next>";
         $next = $redis->hget( $BASE . '_next', $next );
-        say "next=<$next>";
+        say "next=<$next>" if $next;
     }
     while ( $next && $redis->hexists( $BASE . '_next', $next ) ) {
 
