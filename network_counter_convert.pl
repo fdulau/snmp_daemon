@@ -25,7 +25,7 @@ my $CONFIG_FILE = '/opt/snmp_emul/etc/daemon.conf';
 getopts( 'd:hr:c:I:P:v', \%opts );
 if ( $opts{'h'} )
 {
-    print "usage $0 [-D] [-d level] [-B base] [-p port] [-i ip] [-h] [-v]\n\n";
+    print "usage $0 [-D] [-d level] [-B base] [-p port] [-r ip:port] [-i ip] [-h] [-v]\n\n";
     print "\t -h \t\t this help\n";
     print "\t -c conf_file \t configuration file to use (format: peer,def_file,[community])\n";
     print "\t -d level \t debug level\n";
