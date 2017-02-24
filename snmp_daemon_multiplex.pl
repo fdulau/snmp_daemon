@@ -18,7 +18,7 @@ use IO::Handle qw( );    # For autoflush
 use IO::Socket::INET;
 use Math::BigInt;
 use NetSNMP::ASN qw(ASN_INTEGER64 ASN_COUNTER64 ASN_COUNTER ASN_UNSIGNED64 ASN_UNSIGNED ASN_IPADDRESS ASN_TIMETICKS ASN_GAUGE ASN_OPAQUE ASN_DOUBLE ASN_FLOAT);
-use POSIX qw(setsid strtol);
+use POSIX qw(setsid strtol :sys_wait_h);
 use Redis;
 use SNMP;
 use Socket qw( :all );
@@ -34,7 +34,7 @@ use subs qw(say);
 my $OLD_PID = '';
 
 STDOUT->autoflush(1);
-
+my $CHILD = 0;
 my $MAX_DEBUG = 7;
 my $REDIS     = '127.0.0.1:6379';
 my $LOGFILE;
@@ -232,8 +232,9 @@ $SIG{KILL} = $SIG{TERM} = $SIG{INT} = sub {
 };
 
 sub say {
-    my $msg = shift;
-    if ($DEBUG) {
+    my ($msg,$d) = @_;
+    $d //= 0;
+    if ($DEBUG && $DEBUG>=$d) {
         my (  $line ) = ( caller(0) )[ 2 ];
         if ( ref $msg eq 'HASH' ) {
             my $tmp;
@@ -276,19 +277,20 @@ $asn->prepare($desc) or die $asn->error;
 my $snmp_message = $asn->find("SNMPMessage");
 
 my $sel = IO::Select->new;
-add_listener( $CTRL_IP, $CTRL_PORT, $sel );
-
+my %io_select;
+my  $to_reload = 0;
+add_listener( $CTRL_IP, $CTRL_PORT, $sel,\%io_select );
 foreach my $line (@listeners) {
     next if $line =~ /^\s*#/ || $line =~ /^\s*$/;
     my ( $host_port, $def, $community ) = split /,/, $line;
     my ( $host, $port ) = split /:/, $host_port;
     $port      //= 2161;
     $community //= 'public';
-    add_listener( $host, $port, $sel );
+    add_listener( $host, $port, $sel,\%io_select );
     say( "parse $def", 1 );
     fork { sub => \&parse, name=> $EXP_NAME.'_'.$host.'_'.$port, args => [ $def, 0, $community, "$host:$port" ] };
 }
-
+#my $to_reload=re_read( $sel );
 IO: while (1) {
     while ( my @ready = $sel->can_read ) {
         say( "can_read ", 6 );
@@ -297,10 +299,11 @@ IO: while (1) {
             my $h    = $fh->sockhost();
             my $p    = $fh->sockport();
             my $BASE = "$h:$p";
-            say( "p=$p, ip=$h", 1 );
-            if ( $p == $CTRL_PORT ) {
+            say( "p=$p, ip=$h", 2 );
+            if ( $h eq $CTRL_IP && $p == $CTRL_PORT ) {
+            print( "ctrl channel <$buffer>\n");
                 if ( $buffer =~ /^reload/ ) {
-                    re_read( \@listeners, $sel );
+                     $to_reload=re_read( $sel );
                 }
                 if ( $buffer =~ /^debug (\d+)/i ) {
                     $DEBUG = $1;
@@ -313,13 +316,13 @@ IO: while (1) {
             for my $type (@type_list) {
                 my $snmp_type = $asn->find($type);
                 if ( my $out1 = $snmp_type->decode( $out->{pdu} ) ) {
-                    say "SNMP request type=<$type>" if ( $DEBUG > 3 );
+                    say( "SNMP request type=<$type>", 3 );
                     my $snmp_request = $asn->find('PAYLOAD');
                     my $request      = $snmp_request->decode( $out1->{payload} );
-                    say "request=<" . $request->{oid} . "> community=(" . $out->{community} . ")" if ( $DEBUG > 0 );
+                    say( "request=<" . $request->{oid} . "> community=(" . $out->{community} . ")",2 );
                     my $oids_ref = fetch_tree( $request->{oid}, $type, $out1->{max_repetitions}, $out->{community}, $BASE );
-                    say "OID=<" . Dumper($oids_ref) . ">" if ( $DEBUG > 3 );
-                    say "PDU=" . Dumper($out1) if ( $DEBUG > 4 );
+                    say( "OID=<" . Dumper($oids_ref) , 3 );
+                    say( "PDU=" . Dumper($out1) ,4 );
                     my $var_binlist = '';
                     my %encode = (
                         version         => $out->{version},
@@ -335,15 +338,15 @@ IO: while (1) {
                             $#{$oids_ref} = 0;
                         }
                     }
-                    say "SNMP request type=<$type> req=<" . $request->{oid} . "> eq <" . ( $oids_ref->[0] // ' ' ) . ">  --- <" . $#{$oids_ref} . "> end_of_mib=<$end_of_mib>" if ( $DEBUG > 1 );
+                    say( "SNMP request type=<$type> req=<" . $request->{oid} . "> eq <" . ( $oids_ref->[0] // ' ' ) . ">  --- <" . $#{$oids_ref} . "> end_of_mib=<$end_of_mib>",2 );
                     if ( !defined $oids_ref->[0] ) {
                         $oids_ref   = [];
                         $end_of_mib = 1;
-                        say "------- end of mib" if ( $DEBUG > 3 );
+                        say( "------- end of mib" , 3 );
                     }
-                    say Dumper($oids_ref) if ( $DEBUG > 3 );
+                    say( Dumper($oids_ref) ,4 );
                     for my $nbr ( 0 .. $#{$oids_ref} ) {
-                        say "<$nbr> " . $oids_ref->[$nbr] if ( $DEBUG > 2 );
+                        say( "<$nbr> " . $oids_ref->[$nbr],2 );
                         my $type_r;
                         my $type;
                         if ( !$redis->hexists( $BASE . '_type', $oids_ref->[$nbr] ) ) {
@@ -353,7 +356,7 @@ IO: while (1) {
                             $type = $redis->hget( $BASE . '_type', $oids_ref->[$nbr] );
                             $type_r = $TYPES{$type} // 'NULL';
                         }
-                        say "type_r=<$type_r>" if ( $DEBUG > 4 );
+                        say( "type_r=<$type_r>" , 4 );
                         $var_binlist .= 'SEQUENCE { oid' . sprintf( "_%04d", $nbr ) . ' OBJECT_IDENTIFIER, value' . sprintf( "_%04d", $nbr ) . ' ' . "$type_r } ,\n";
                         if ( $type eq 'SNMPWalk' && '.' . $request->{oid} eq $oids_ref->[$nbr] ) {
                             $encode{ 'oid' . sprintf( "_%04d", $nbr ) } = $redis->hget( $BASE . '_next', $oids_ref->[$nbr] ) // $oids_ref->[$nbr];
@@ -368,16 +371,16 @@ IO: while (1) {
                         }
                         else {
                             $value = to_hex( create_val($type), $type_r, $oids_ref->[$nbr] );
-                            say "<$value> <$type_r> <$type> created value for " . $oids_ref->[$nbr];
+                            say( "<$value> <$type_r> <$type> created value for " . $oids_ref->[$nbr],2);
                         }
                         no strict;
                         if ( $redis->hexists( $BASE . '_do', $oids_ref->[$nbr] ) ) {
-                            say $redis->hget( $BASE . '_do', $oids_ref->[$nbr] ) if ( $DEBUG > 4 );
+                            say( $redis->hget( $BASE . '_do', $oids_ref->[$nbr] ) , 4 );
                             eval( $redis->hget( $BASE . '_do', $oids_ref->[$nbr] ) );
                         }
                         if ( $value && $value =~ /^\$_SE_/ ) {
                             $value = eval($value);
-                            say $value if ( $DEBUG > 4 );
+                            say( $value,4 );
                         }
                         use strict;
                         $encode{ 'value' . sprintf( "_%04d", $nbr ) } = $value;
@@ -392,8 +395,8 @@ IO: while (1) {
                     $var_binlist =~ s/,$//;
                     my $response = $resp;
                     $response =~ s/__varbinlist__/$var_binlist/;
-                    say $response if ( $DEBUG > 4 );
-                    say \%encode  if ( $DEBUG > 2 );
+                    say( $response, 4 );
+                    say( \%encode ,2 );
                     my $asn_r = Convert::ASN1->new();
                     $asn_r->prepare($response) or die $asn_r->error;
                     my $snmp_response = $asn_r->find("RESPONSE");
@@ -404,43 +407,55 @@ IO: while (1) {
             }
         }
     }
+    $to_reload=re_read( $sel ) if $to_reload;
 }
 
 sub re_read {
-    my ( $addrs_ref, $sel ) = @_;
-    $addrs_ref = ();
-    say( "re read", 1 );
-    my @addrs_new = io($CONFIG_FILE)->chomp->slurp;
-    $addrs_ref = \@addrs_new;
-    my @old = $sel->handles;
-    foreach my $s (@old) {
-        close $s;
-        $sel->remove($s);
+    my (  $sel ) = @_;
+    say( "re read $CONFIG_FILE ", 1 );
+    if ( map{ $_->{state} =~ /active/i} @Forks::Super::ALL_JOBS)
+    {
+        say "waiting to_reload ,1";
+        $to_reload=1;
+        return 1;
     }
-    add_listener( $CTRL_IP, $CTRL_PORT, $sel );
-    foreach my $line (@listeners) {
+    my @addrs_new = io($CONFIG_FILE)->chomp->slurp;
+    add_listener( $CTRL_IP, $CTRL_PORT, $sel,\%io_select );
+    foreach my $line (@addrs_new) {
         next if $line =~ /^\s*#/ || $line =~ /^\s*$/;
         my ( $host_port, $def, $community ) = split /,/, $line;
         my ( $host, $port ) = split /:/, $host_port;
         $port      //= 2161;
         $community //= 'public';
-        add_listener( $host, $port, $sel );
+        add_listener( $host, $port, $sel,\%io_select );
         say( "re parse $def", 1 );
-        fork { sub => \&parse, name=> $EXP_NAME.'_'.$host.'_'.$port, args => [ $def, 1, $community, "$host:$port" ] };
+        $CHILD= fork { sub => \&parse, name=> $EXP_NAME.'_'.$host.'_'.$port, args => [ $def, 1, $community, "$host:$port" ] };
+        say( "after re parse $def <$CHILD>", 1 );
     }
+    say( "end re read", 1 );
+    return 0;
 }
 
 sub add_listener {
-    my ( $host, $port, $sel ) = @_;
-    if ($host) {
-        say( "add host=$host:$port", 1 );
-        $sel->add(
-            IO::Socket::INET->new(
+    my ( $host, $port, $sel,$ref_io_select ) = @_;
+    say( "add host=$host:$port <$CHILD>", 1 );    
+    if ($host && !$CHILD) {
+        
+        if ( exists $ref_io_select->{$host.'_'.$port} )
+        {
+             say "deleting ".$host.'_'.$port, 1;
+             close($ref_io_select->{$host.'_'.$port});
+             $sel->remove($host.'_'.$port);
+             sleep 5;
+        }
+        my $lsn = IO::Socket::INET->new(
                 LocalAddr => $host,
                 LocalPort => $port,
                 Proto     => 'udp'
-            )
-        );
+            )  or say "Can't bind : $@",1;
+
+        $sel->add(   $lsn     );
+        $ref_io_select->{$host.'_'.$port} = $lsn;
     }
 }
 
@@ -473,20 +488,20 @@ sub fetch_tree {
     my $first       = $oid;
     #my @enterprises = $redis->smembers('enterprise');
     if ( $type eq 'SNMPBulkRequest' ) {
-        say "next=<$next>";
+        say( "next=<$next>" , 2);
         $next = $redis->hget( $BASE . '_next', $next );
-        say "next=<$next>" if $next;
+        say( "next=<$next>" , 2) if $next;
     }
     while ( $next && $redis->hexists( $BASE . '_next', $next ) ) {
 
         $elem_community = $redis->hget( $BASE . '_community', $next );
         $ind++;
-        say "next=<$next> ind=<$ind> community=<$community>  elem_community=<$elem_community> type=<$type>";
+        say( "next=<$next> ind=<$ind> community=<$community>  elem_community=<$elem_community> type=<$type>",2);
         if ( $type eq 'SNMPBulkRequest' ) {
             last if ( $ind > $max_rep );
         }
         else {
-            say Dumper($oid) if ( $DEBUG > 3 );
+            say( Dumper($oid), 3 );
             $oid =~ /\.(\d+)$/;
             my $A = ${^PREMATCH} // '.1';
             $A =~ /\.(\d+)$/;
@@ -512,7 +527,7 @@ sub fetch_tree {
         }
     }
     push @oids, $next if ( $next && defined $redis->hget( $BASE . '_access', $next ) && $redis->hget( $BASE . '_type', $next ) != 0 && $redis->hget( $BASE . '_community', $next ) eq $community );
-    say "OID from fetch_tree=" . Dumper( \@oids ) if ( $DEBUG > 3 );
+    say( "OID from fetch_tree=" . Dumper( \@oids ), 3 );
     return \@oids;
 }
 
@@ -605,7 +620,7 @@ sub to_hex {
     my $data = shift;
     my $type = shift;
     my $oid  = shift;
-    say "oid=<$oid> type=<$type> <" . ( $data // '' ) . ">" if ( $DEBUG > 1 );
+    say ( "oid=<$oid> type=<$type> <" . ( $data // '' ) . ">" ,2 );
     if ( $data && $data !~ /^\$_SE_/ ) {
 
         # packing data in single char
@@ -670,7 +685,7 @@ sub check_process {
 
 sub parse {
     my ( $file, $flush, $community, $BASE ) = @_;
-    say "file=<$file>" if ( $DEBUG > 0 );
+    say( "   file=<$file>",1 );
     my $ret_enterprise = 0;
     if ($flush) {
         $redis->flushdb();
@@ -691,7 +706,7 @@ sub parse {
         $i++;
     }
     if ( $line_nbr == $flag ) {
-        say "WALK file <$line_nbr>  <$flag>" if ( $DEBUG > 0 );
+        say( "WALK file <$line_nbr>  <$flag>",2);
         parse_walk( \@lines, $community, $BASE );
     }
     my $CONFIG = new Config::General(
@@ -702,10 +717,10 @@ sub parse {
     );
     eval { %Conf = $CONFIG->getall(); };
     if ($@) {
-        say "NOK $@";
+        say( "NOK $@",1);
         exit;
     }
-    say \%Conf if ( $DEBUG > 6 );
+    say( \%Conf, 5 );
     my $agentx = 0;
     if ( ( ref $Conf{oid} ) eq 'HASH' && scalar keys %{ $Conf{oid} } ) {
         foreach my $base ( keys %{ $Conf{oid} } ) {
@@ -718,16 +733,18 @@ sub parse {
         }
     }
     if ($agentx) {
-        say "agentx conf ($agentx)" if ( $DEBUG > 0 );
+        say ("agentx conf ($agentx)" ,2 );
         parse_agentx( \%Conf, $community, $BASE );
     }
     if ($ret_enterprise) {
         print join ',', @ent_list;
     }
+
 }
 
 sub parse_agentx {
     my ( $Conf, $COMMUNITY, $BASE ) = @_;
+    say("in parse conf: $BASE",1);
     foreach my $base_oid ( keys %{ $Conf->{oid} } ) {
         $enterprises_full{$base_oid} = '';
         foreach my $index_oid ( keys %{ $Conf->{oid}{$base_oid}{index} } ) {
@@ -761,7 +778,7 @@ sub parse_agentx {
         foreach my $l (@each) {
             $new_oid .= '.' . $l;
             $mib{$new_oid}{next} = $o;
-            say "<$o> <$new_oid>" if ( $DEBUG > 4 );
+            say ("<$o> <$new_oid>" , 4 );
             $mib{$new_oid}{next} = $o;
         }
     }
@@ -823,15 +840,16 @@ sub parse_agentx {
             $redis->srem( 'enterprise', $ent_full );
         }
     }
-    say Dumper( \%mib )              if ( $DEBUG > 2 );
-    say Dumper( \@sorted )           if ( $DEBUG > 3 );
-    say Dumper( \%enterprises_full ) if ( $DEBUG > 1 );
+    say( Dumper( \%mib )  , 3 );
+    say( Dumper( \@sorted )  , 4 );
+    say( Dumper( \%enterprises_full ) , 2 );
+    say("end parse conf: $BASE",1);
 }
 
 sub parse_walk {
     my ( $lines, $COMMUNITY, $BASE ) = @_;
     my $start_oid;
-    say "in parse_walk" if ( $DEBUG > 0 );
+    say ("in parse_walk: $BASE" ,1 );
     foreach my $line (@$lines) {
         $line =~ /^((\.\d+)+)\s+=\s+(([^:]+):)\s+(.*)/;
         my $oid      = $1;
@@ -846,7 +864,7 @@ sub parse_walk {
             $val =~ s/\((\d+)\) .*/$1/;
         }
         my $type = get_type($type_raw);
-        say "<$line> <$oid> <$type_raw> <$type> <$type_raw> <$val>" if ( $DEBUG > 1 );
+        say ( "<$line> <$oid> <$type_raw> <$type> <$type_raw> <$val>" ,2 );
         $val =~ s/"//g;
         $mib{$oid}{type}      = $type;
         $mib{$oid}{val}       = $val;
@@ -868,7 +886,7 @@ sub parse_walk {
             $res = $`;
             $enterprises_full{$res} = '';
         }
-        say "<$res> [$line]  <$oid> <$type_raw> <$type>  <$val>" if ( $DEBUG > 4 );
+        say( "<$res> [$line]  <$oid> <$type_raw> <$type>  <$val>" ,5);
     }
 
     foreach my $ent_full ( keys %enterprises_full ) {
@@ -877,7 +895,7 @@ sub parse_walk {
         $mib{$ent_full}{community} = $COMMUNITY;
         $mib{$ent_full}{val}       = '';
         push @ent_list, $ent_full unless ($DELETE);
-        say "new ent = <$ent_full>" if ( $DEBUG > 6 );
+        say ("new ent = <$ent_full>" ,5 );
         if ( !$blank ) {
             if ($DELETE) {
                 $redis->srem( 'enterprise', $ent_full );
@@ -902,7 +920,7 @@ sub parse_walk {
                 elsif ($populate) {
                     $longest =~ s/^(\.\d+).*/$1/;
                 }
-                say "<$oid> <$next> <$longest>" if ( $DEBUG > 5 );
+                say( "<$oid> <$next> <$longest>" , 5 );
                 my $ext;
                 foreach my $l ( ( $longest =~ /(\d+)+/g ) ) {
                     $ext .= '.' . $l;
@@ -948,7 +966,7 @@ sub parse_walk {
             foreach my $l (@each) {
                 $new_oid .= '.' . $l;
                 $mib{$new_oid}{next} = $next;
-                say "<$o> <$new_oid> <$next>" if ( $DEBUG > 4 );
+                say ("<$o> <$new_oid> <$next>" , 4 );
                 if ( !$blank ) {
                     if ( !$DELETE ) {
                         $redis->hset( $BASE . '_next', $new_oid, $next );
@@ -972,15 +990,16 @@ sub parse_walk {
         }
         else {
             $start_oid =~ s/(\d+)$/$1 + 1/e;
-            say "**** $start_oid" if ( $DEBUG > 0 );
+            say( "**** $start_oid" ,2 );
             $redis->hset( $BASE . '_next',      $last_oid, $start_oid );
             $redis->hset( $BASE . '_access',    $last_oid, 'ro' );
             $redis->hset( $BASE . '_community', $last_oid, $COMMUNITY );
         }
     }
-    say Dumper( \%mib )              if ( $DEBUG > 2 );
-    say Dumper( \@all_oid )          if ( $DEBUG > 3 );
-    say Dumper( \%enterprises_full ) if ( $DEBUG > 1 );
+    say( Dumper( \%mib )   ,3 );
+    say( Dumper( \@all_oid ) ,4 );
+    say( Dumper( \%enterprises_full ) ,2 );
+    say ("end parse_walk: $BASE" ,1 );
 }
 
 sub parse_mib {
@@ -992,7 +1011,7 @@ sub parse_mib {
     &SNMP::initMib();
     my $start_oid;
     my $last_oid;
-
+    say ("in parse_mib: $BASE" ,1 );
     foreach my $oid ( keys(%SNMP::MIB) ) {
         if ( !defined $start_oid ) {
             $start_oid = $oid;
@@ -1007,7 +1026,7 @@ sub parse_mib {
 
         if ($res) {
             $enterprises_full{$ent} = '';
-            say "<$res> <$oid> <$ent>" if ( $DEBUG > 6 );
+            say ("<$res> <$oid> <$ent>",5);
         }
         my $type   = $SNMP::MIB{$oid}{'type'};
         my $access = $SNMP::MIB{$oid}{'access'} // 'ro';
@@ -1068,9 +1087,10 @@ sub parse_mib {
         }
         $mib{$ent_full}{next} = $sorted[ next_leaf( 0, \@sorted ) ];
     }
-    say Dumper( \%mib )              if ( $DEBUG > 2 );
-    say Dumper( \@sorted )           if ( $DEBUG > 3 );
-    say Dumper( \%enterprises_full ) if ( $DEBUG > 1 );
+    say( Dumper( \%mib )  ,3 );
+    say( Dumper( \@sorted ) ,4);
+    say( Dumper( \%enterprises_full ),2 );
+    say ("end parse_mib: $BASE" ,1 );
 }
 
 sub next_leaf {
@@ -1120,7 +1140,7 @@ sub get_type {
     $asn = ASN_BOOLEAN    if ( $type =~ /^BOOL/i );
 
     # $asn = ASN_BIT_STR if ( $type =~ /^BITS$/i ) ;
-    say "<$type> => <$asn>";
+    say( "<$type> => <$asn>",2);
     return $asn;
 }
 
