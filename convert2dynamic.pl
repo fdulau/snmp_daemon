@@ -44,16 +44,16 @@ if ( $opts->{help} )
     print "usage $0 [--help|-h] [--version|-v] [--debug|-d level]  [--redis|-r ip:port] [-extra|-e OID,val] \n\n";
     print "\t -h \t\t\t\t this help\n";
     print "\t -v \t\t\t\t version and exit\n";
-    print "\t -c conf_file \t\t configuration file to use (format: ip[:port],walk_file,[community])\n";
+    print "\t -c conf_file \t\t configuration file to use (format: ip[:port],walk_file,[community]) current=$opts->{config}\n";
     print "\t -d level \t\t\t debug level (also possible to set by ENV variable DEBUG)\n";
-    print "\t -r ip:port \t\t redis server to use for the DB (default=$opts->{redis})\n";
-    print "\t --counter OID \t\t an OID to add to the list of counter (could be repeated)\n";
+    print "\t -r ip:port \t\t redis server to use for the DB (current=$opts->{redis})\n";
+    print "\t --counter OID \t\t an OID to add to the list of counter and could be repeated\n";
     print "\t --total_used OID,OID \t total space OID separator used space OID , this peer is added in the total_used list and could be repeated\n";
     print "\t\t\t\t\t (the separator is anything that is not a dot or a digit, be care of the shell specification) \n";
     print "\t --used_free OID,OID \t used space OID separator free space OID , this peer is added in the used_free list and could be repeated\n";
     print "\t\t\t\t\t (the separator is anything that is not a dot or a digit, be care of the shell specification) \n";
     print "\t --blank|-b \t\t don't insert the result (running at blank)\n";
-    print "\t --step|-s \t\t the number of step to increment a counter before it reach the limit (default:$opts->{step}\n";
+    print "\t --step|-s \t\t the number of step to increment a counter before it reach the limit (current=$opts->{step})\n";
     exit;
 }
 
@@ -63,6 +63,8 @@ if ( $opts->{version} )
 {
     die "$0 v$VERSION (c) DULAUNOY Fabrice, 2009-2013\n";
 }
+
+ $opts->{step} ||=200;
 
 my $redis = Redis->new(
     server => $opts->{redis},
@@ -228,7 +230,7 @@ foreach my $line ( @listeners )
                     my $uuid = $ug->create_hex();
                     my $var  = '$_SE_' . $uuid;
                     my $inc  = int( $tmp_to_update_oid{$BASE . '_total_' . $oid_real}{val} / $opts->{step} ) || 1;
-                    my $do   = "$var=($var += $inc))>$tmp_to_update_oid{$BASE.'_total_'.$oid_real}{val}   ? $var - $tmp_to_update_oid{$BASE.'_total_'.$oid_real}{val} : $var";
+                    my $do   = "$var=($var += rand($inc))>$tmp_to_update_oid{$BASE.'_total_'.$oid_real}{val}   ? $var - $tmp_to_update_oid{$BASE.'_total_'.$oid_real}{val} : $var;";
                     push @to_update, $BASE . ',' . $var . ',' . $oid_real . ',' . $do;
                 }
             }
@@ -252,9 +254,9 @@ foreach my $line ( @listeners )
                 my $inc      = int( $total / $opts->{step} ) || 1;
                 my $uuid     = $ug->create_hex();
                 my $var      = '$_SE_' . $uuid;
-                my $do       = "$var=($var += $inc))>$total ?$var - $total : $var";
+                my $do       = "$var=($var += rand($inc))>$total ? $var - $total : $var;";
                 push @to_update, $BASE . ',' . $var . ',' . $used_oid . ',' . $do;
-                $do = "$var=($var -= $inc))<=0 ?$total-$var : $var";
+                $do = "$var=($var -= $inc))<=0 ? $total-$var : $var;";
                 push @to_update, $BASE . ',' . $var . ',' . $free_oid . ',' . $do;
             }
         }
