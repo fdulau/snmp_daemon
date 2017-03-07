@@ -30,6 +30,8 @@ use constant max32 => 2**32 - 1;
 use constant max64 => Math::BigInt->new( 2**64 ) - 1;
 
 use subs qw(say);
+
+$Forks::Super::CHILD_FORK_OK = 1;
 #no warnings 'File::Find';
 my $OLD_PID = '';
 
@@ -304,11 +306,12 @@ foreach my $line ( @listeners )
     $community //= 'public';
     add_listener( $host, $port, $sel, \%io_select );
     say( "parse $def", 1 );
-    fork {
+    my $pid= fork {
         sub  => \&parse,
         name => $EXP_NAME . '_' . $host . '_' . $port,
         args => [$def, 0, $community, "$host:$port"]
     };
+    my $w = waitpid $pid, 0;
 }
 #my $to_reload=re_read( $sel );
 IO: while ( 1 )
@@ -477,6 +480,7 @@ sub re_read
             name => $EXP_NAME . '_' . $host . '_' . $port,
             args => [$def, 1, $community, "$host:$port"]
         };
+        my $w = waitpid $CHILD, 0;
         say( "after re parse $def <$CHILD>", 1 );
     }
     say( "end re read", 1 );
