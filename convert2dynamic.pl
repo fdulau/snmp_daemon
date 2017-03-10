@@ -64,7 +64,7 @@ if ( $opts->{version} )
     die "$0 v$VERSION (c) DULAUNOY Fabrice, 2009-2013\n";
 }
 
- $opts->{step} ||=200;
+$opts->{step} ||= 200;
 
 my $redis = Redis->new(
     server => $opts->{redis},
@@ -158,9 +158,9 @@ my @used_free_list = (
 );
 
 my @used_timeticks_list = qw(
-    .1.3.6.1.4.1.9694.1.6.2.2.0
-    .1.3.6.1.2.1.1.3.0
-    .1.3.6.1.2.1.25.1.1.0
+  .1.3.6.1.4.1.9694.1.6.2.2.
+  .1.3.6.1.2.1.1.3.
+  .1.3.6.1.2.1.25.1.1.
 );
 
 my @to_update;
@@ -213,24 +213,22 @@ foreach my $line ( @listeners )
             my $uuid = $ug->create_hex();
             my $var  = '$_SE_' . $uuid;
             my $m    = ( 2**$size ) - 1;
-            my $inc  = int( $m / $opts->{step} );
-            my $do   = "$var=($var += int rand($inc))>$m ? $var - $m : $var";
+            my $inc  = '$_SE_inc';
+            my $do   = "$inc  = int( $m / $opts->{step} );$var=($var += int rand($inc))>$m ? $m - $var : $var";
             push @to_update, $BASE . ',' . $var . ',' . $oid . ',' . $do;
         }
     }
-    foreach my $timeticks ( @used_timeticks_list )
+
+    while ( $all =~ /^(\S+)\s+=\s+(Timeticks):/mg )
     {
-        $timeticks =~ s/\./\./g;
-        while ( $all =~ /^($timeticks\S+)\s+=\s+(\w+):/mg )
-        {
-            my $oid  = $1;
-            my $type = $2;
-            my $uuid = $ug->create_hex();
-            my $var  = '$_SE_' . $uuid;
-            my $inc  = $opts->{step};
-            my $do   = "$var+=(int rand($inc))";
-            push @to_update, $BASE . ',' . $var . ',' . $oid . ',' . $do;
-        }
+        my $oid  = $1;
+        my $type = $2;
+        my $uuid = $ug->create_hex();
+        my $var  = '$_SE_' . $uuid;
+        my $inc  = '$_SE_inc';
+        my $m    = 4294967295;
+        my $do   = "$inc = int rand($opts->{step});($var += $inc)>$m ? $inc : $var";
+        push @to_update, $BASE . ',' . $var . ',' . $oid . ',' . $do;
     }
     my %tmp_to_update_oid;
     foreach my $item ( @total_used_list )
@@ -249,8 +247,8 @@ foreach my $line ( @listeners )
                 {
                     my $uuid = $ug->create_hex();
                     my $var  = '$_SE_' . $uuid;
-                    my $inc  = int( $tmp_to_update_oid{$BASE . '_total_' . $oid_real}{val} / $opts->{step} ) || 1;
-                    my $do   = "$var=($var += rand($inc))>$tmp_to_update_oid{$BASE.'_total_'.$oid_real}{val}   ? $var - $tmp_to_update_oid{$BASE.'_total_'.$oid_real}{val} : $var;";
+                    my $inc  = '$_SE_inc';
+                    my $do   = "$inc  = int( $tmp_to_update_oid{$BASE . '_total_' . $oid_real}{val} / $opts->{step} ) || 1;$var=($var += rand($inc))>$tmp_to_update_oid{$BASE.'_total_'.$oid_real}{val}   ? $var - $tmp_to_update_oid{$BASE.'_total_'.$oid_real}{val} : $var;";
                     push @to_update, $BASE . ',' . $var . ',' . $oid_real . ',' . $do;
                 }
             }
@@ -271,10 +269,10 @@ foreach my $line ( @listeners )
             {
                 my $free_val = $2;
                 my $total    = $free_val + $used_val;
-                my $inc      = int( $total / $opts->{step} ) || 1;
+                my $inc      = '$_SE_inc';
                 my $uuid     = $ug->create_hex();
                 my $var      = '$_SE_' . $uuid;
-                my $do       = "$var=($var += rand($inc))>$total ? $var - $total : $var;";
+                my $do       = "$inc      = int( $total / $opts->{step} ) || 1;$var=($var += rand($inc))>$total ? $var - $total : $var;";
                 push @to_update, $BASE . ',' . $var . ',' . $used_oid . ',' . $do;
                 $do = "$var=($var -= $inc))<=0 ? $total-$var : $var;";
                 push @to_update, $BASE . ',' . $var . ',' . $free_oid . ',' . $do;
