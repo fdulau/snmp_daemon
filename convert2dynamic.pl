@@ -132,6 +132,7 @@ my @total_used_list = (
         used  => {oid => '.1.3.6.1.4.1.2021.9.1.8.'}
     },
 );
+
 my @used_free_list = (
     {
         used => {oid => '.1.3.6.1.4.1.2620.1.6.7.1.4.'},
@@ -154,6 +155,12 @@ my @used_free_list = (
         used => {oid => '.1.3.6.1.4.1.2021.9.1.8.'}
     },
 
+);
+
+my @used_timeticks_list = qw(
+    .1.3.6.1.4.1.9694.1.6.2.2.0
+    .1.3.6.1.2.1.1.3.0
+    .1.3.6.1.2.1.25.1.1.0
 );
 
 my @to_update;
@@ -202,7 +209,7 @@ foreach my $line ( @listeners )
         {
             my $oid  = $1;
             my $type = $2;
-            my $size = $3;
+            my $size = $3 // 32;
             my $uuid = $ug->create_hex();
             my $var  = '$_SE_' . $uuid;
             my $m    = ( 2**$size ) - 1;
@@ -211,7 +218,20 @@ foreach my $line ( @listeners )
             push @to_update, $BASE . ',' . $var . ',' . $oid . ',' . $do;
         }
     }
-
+    foreach my $timeticks ( @used_timeticks_list )
+    {
+        $timeticks =~ s/\./\./g;
+        while ( $all =~ /^($timeticks\S+)\s+=\s+(\w+):/mg )
+        {
+            my $oid  = $1;
+            my $type = $2;
+            my $uuid = $ug->create_hex();
+            my $var  = '$_SE_' . $uuid;
+            my $inc  = $opts->{step};
+            my $do   = "$var+=(int rand($inc))";
+            push @to_update, $BASE . ',' . $var . ',' . $oid . ',' . $do;
+        }
+    }
     my %tmp_to_update_oid;
     foreach my $item ( @total_used_list )
     {
