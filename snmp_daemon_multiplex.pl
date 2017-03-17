@@ -49,7 +49,7 @@ my %enterprises_full;
 my %mib;
 my $blank = 0;
 my @ent_list;
-my $old_populate        = 1;
+my $old_populate        = 0;
 my $DELETE              = 0;
 my $fully_populate      = 1;
 my $populate            = 1;
