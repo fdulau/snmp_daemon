@@ -359,7 +359,6 @@ sub parse_walk
         $mib{ $oid }{ access }    = 'ro';
         $mib{ $oid }{ community } = $COMMUNITY;
         my $res;
-
         if ( $old_populate )
         {
             my $tmp = $enterprise_mgmt_oid;
@@ -372,10 +371,9 @@ sub parse_walk
         {
             my $trans = &SNMP::translateObj( $oid );
             my $lcss = lcss( $oid, $trans ) // '';
-#            warn "<$oid>\t<$trans>\t<$lcss>";
+            say "<$oid>\t<$trans>\t<$lcss>" if ( $DEBUG{ 6 } );
             $oid =~ /$lcss$/;
             $res = $`;
-
             $enterprises_full{ $res } = '';
         }
 #        warn "old_populate=<$old_populate>  <$res> [$line]  <$oid> <$type_raw> <$type>  <$val>";
@@ -384,10 +382,12 @@ sub parse_walk
 
     foreach my $ent_full ( keys %enterprises_full )
     {
-        $mib{ $ent_full }{ type }      = 0;
-        $mib{ $ent_full }{ access }    = 'ro';
-        $mib{ $ent_full }{ community } = $COMMUNITY;
-        $mib{ $ent_full }{ val }       = '';
+        if ( ! exists  $mib{ $ent_full } ) {
+            $mib{ $ent_full }{ type }      = 0;
+            $mib{ $ent_full }{ access }    = 'ro';
+            $mib{ $ent_full }{ community } = $COMMUNITY;
+            $mib{ $ent_full }{ val }       = '';
+        }
         push @ent_list, $ent_full unless ( $DELETE );
         say "new ent = <$ent_full>" if ( $DEBUG{ 6 } );
         if ( !$blank )
@@ -434,7 +434,7 @@ sub parse_walk
                     $ext .= '.' . $l;
                     if ( !exists $mib{ $ent . $ext } )
                     {
-                        #		    say "add <".$ent . $ext."> \t\t <$oid> \t\t <$next> \t\t <$longest> \t\t <$ent>";
+                        say "add <".$ent . $ext."> \t\t <$oid> \t\t <$next> \t\t <$longest> \t\t <$ent>" if $DEBUG{ 7 };
                         $mib{ $ent . $ext }{ type }      = 0;
                         $mib{ $ent . $ext }{ access }    = 'ro';
                         $mib{ $ent . $ext }{ community } = $COMMUNITY;
@@ -448,6 +448,7 @@ sub parse_walk
 
         @all_oid = sort_oids( [ keys %mib ] );
     }
+
     foreach my $ind ( 0 .. $#all_oid )
     {
         my $oid = $all_oid[$ind];
@@ -459,7 +460,7 @@ sub parse_walk
         $mib{ $oid }{ next } = $all_oid[$next];
         if ( !$blank )
         {
-            if ( !$DELETE )
+            if ( !$DELETE && !$redis->hexists( $BASE . '_val',       $oid) )
             {
                 $redis->hset( $BASE . '_type',      $oid, $mib{ $oid }{ type } );
                 $redis->hset( $BASE . '_access',    $oid, $mib{ $oid }{ access } // 'ro' );
@@ -470,6 +471,7 @@ sub parse_walk
             }
         }
     }
+
     my $last_oid;
     foreach my $o ( @all_oid )
     {
