@@ -460,7 +460,7 @@ sub parse_walk
         $mib{ $oid }{ next } = $all_oid[$next];
         if ( !$blank )
         {
-            if ( !$DELETE && !$redis->hexists( $BASE . '_val',       $oid) )
+            if ( !$DELETE )
             {
                 $redis->hset( $BASE . '_type',      $oid, $mib{ $oid }{ type } );
                 $redis->hset( $BASE . '_access',    $oid, $mib{ $oid }{ access } // 'ro' );
