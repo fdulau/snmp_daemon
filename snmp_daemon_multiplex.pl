@@ -217,6 +217,9 @@ $REDIS //= $opts{r};
 $CONFIG_FILE = ( $opts{c} ) // $CONFIG_FILE;
 
 my @listeners = io( $CONFIG_FILE )->chomp->slurp;
+my %all_listeners  = map { my $tmp =(split /,/,$_)[0] ;$tmp => 1 } @listeners;
+$all_listeners{$CTRL_IP.':'.$CTRL_PORT} = 1;
+
 $0 = $EXP_NAME;
 my $main_process = new Sys::Prctl();
 $main_process->name( $0 );
@@ -296,7 +299,8 @@ my $snmp_message = $asn->find( "SNMPMessage" );
 my $sel = IO::Select->new;
 my %io_select;
 my $to_reload = 0;
-add_listener( $CTRL_IP, $CTRL_PORT, $sel, \%io_select );
+
+add_listener( $CTRL_IP, $CTRL_PORT, $sel, \%io_select, \%all_listeners);
 foreach my $line ( @listeners )
 {
     next if $line =~ /^\s*#/ || $line =~ /^\s*$/;
@@ -304,7 +308,7 @@ foreach my $line ( @listeners )
     my ( $host, $port ) = split /:/, $host_port;
     $port      //= 2161;
     $community //= 'public';
-    add_listener( $host, $port, $sel, \%io_select );
+    add_listener( $host, $port, $sel, \%io_select, \%all_listeners );
     say( "parse $def", 1 );
     my $pid= fork {
         sub  => \&parse,
@@ -330,7 +334,7 @@ IO: while ( 1 )
             {
                 print( "ctrl channel <$buffer>\n" );
                 if ( $buffer =~ /^reload/ )
-                {
+                { 
                     $to_reload = re_read( $sel );
                 }
                 if ( $buffer =~ /^debug (\d+)/i )
@@ -465,7 +469,9 @@ sub re_read
         return 1;
     }
     my @addrs_new = io( $CONFIG_FILE )->chomp->slurp;
-    add_listener( $CTRL_IP, $CTRL_PORT, $sel, \%io_select );
+    %all_listeners  = map { my $tmp = (split /,/,$_)[0] ;$tmp => 1 } @addrs_new;
+    $all_listeners{$CTRL_IP.':'.$CTRL_PORT} = 1;
+    add_listener( $CTRL_IP, $CTRL_PORT, $sel, \%io_select, \%all_listeners );
     foreach my $line ( @addrs_new )
     {
         next if $line =~ /^\s*#/ || $line =~ /^\s*$/;
@@ -473,7 +479,7 @@ sub re_read
         my ( $host, $port ) = split /:/, $host_port;
         $port      //= 2161;
         $community //= 'public';
-        add_listener( $host, $port, $sel, \%io_select );
+        add_listener( $host, $port, $sel, \%io_select, \%all_listeners );
         say( "re parse $def", 1 );
         $CHILD = fork {
             sub  => \&parse,
@@ -483,22 +489,22 @@ sub re_read
         my $w = waitpid $CHILD, 0;
         say( "after re parse $def <$CHILD>", 1 );
     }
+    clean_listener( \%io_select, \%all_listeners );
     say( "end re read", 1 );
     return 0;
 }
 
 sub add_listener
 {
-    my ( $host, $port, $sel, $ref_io_select ) = @_;
+    my ( $host, $port, $sel, $ref_io_select, $all_listener ) = @_;
     say( "add host=$host:$port <$CHILD>", 1 );
     if ( $host && !$CHILD )
     {
-
-        if ( exists $ref_io_select->{$host . '_' . $port} )
+        if ( exists $ref_io_select->{$host . ':' . $port} )
         {
-            say "deleting " . $host . '_' . $port, 1;
-            close( $ref_io_select->{$host . '_' . $port} );
-            $sel->remove( $host . '_' . $port );
+            say "deleting " . $host . ':' . $port, 1;
+            close( $ref_io_select->{$host . ':' . $port} );
+            $sel->remove( $host . ':' . $port );
             sleep 5;
         }
         my $lsn = IO::Socket::INET->new(
@@ -508,9 +514,26 @@ sub add_listener
         ) or say "Can't bind : $@", 1;
 
         $sel->add( $lsn );
-        $ref_io_select->{$host . '_' . $port} = $lsn;
+        $ref_io_select->{$host . ':' . $port} = $lsn;
     }
 }
+
+sub clean_listener
+{
+    my ( $ref_io_select,  $all_listener ) = @_;
+    say( "Clean listener", 1 );
+    foreach (keys %{$ref_io_select})
+    {
+        if ( ! exists $all_listener->{$_} )
+        {
+            say "deleting " . $_, 1;
+            close( $ref_io_select->{$_} );
+            $sel->remove( $_ );
+        }
+    }
+#    sleep 5;
+}
+
 
 sub generate_oid
 {
@@ -765,15 +788,15 @@ sub parse
     my ( $file, $flush, $community, $BASE ) = @_;
     say( "   file=<$file>", 1 );
     my $ret_enterprise = 0;
-    if ( $flush )
-    {
-        $redis->flushdb();
-        exit if ( !$file );
-    }
+#    if ( $flush )
+#    {
+#        $redis->flushdb();
+#        exit if ( !$file );
+#    }
     my $all = io( $file )->chomp->slurp;
     if ( $all =~ /::=\s*\{\s+/ )
     {
-        parse_mib( $file, $community, $BASE );
+        parse_mib( $file, $community, $BASE, $flush );
         exit;
     }
     my @lines    = split /\n/, $all;
@@ -789,7 +812,7 @@ sub parse
     if ( $line_nbr == $flag )
     {
         say( "WALK file <$line_nbr>  <$flag>", 2 );
-        parse_walk( \@lines, $community, $BASE );
+        parse_walk( \@lines, $community, $BASE, $flush );
     }
     my $CONFIG = new Config::General(
         -LowerCaseNames => 1,
@@ -822,7 +845,7 @@ sub parse
     if ( $agentx )
     {
         say( "agentx conf ($agentx)", 2 );
-        parse_agentx( \%Conf, $community, $BASE );
+        parse_agentx( \%Conf, $community, $BASE, $flush );
     }
     if ( $ret_enterprise )
     {
@@ -832,7 +855,7 @@ sub parse
 
 sub parse_agentx
 {
-    my ( $Conf, $COMMUNITY, $BASE ) = @_;
+    my ( $Conf, $COMMUNITY, $BASE, $to_del ) = @_;
     say( "in parse conf: $BASE", 1 );
     foreach my $base_oid ( keys %{$Conf->{oid}} )
     {
@@ -954,9 +977,18 @@ sub parse_agentx
 
 sub parse_walk
 {
-    my ( $lines, $COMMUNITY, $BASE ) = @_;
+    my ( $lines, $COMMUNITY, $BASE, $to_del) = @_;
     my $start_oid;
     say( "in parse_walk: $BASE", 1 );
+    if ( $to_del ) {
+        $redis->del( $BASE . '_next');
+        $redis->del( $BASE . '_val');
+        $redis->del( $BASE . '_type');
+        $redis->del( $BASE . '_do');
+        $redis->del( $BASE . '_access');
+        $redis->del( $BASE . '_community');
+        $redis->del( $BASE . '_label');
+    }
     foreach my $line ( @$lines )
     {
         if ( $line =~ /^((\.\d+)+)\s+=\s+(([^:]+):)\s+(.*)/ )
@@ -1149,7 +1181,7 @@ sub parse_walk
 
 sub parse_mib
 {
-    my ( $file, $COMMUNITY, $BASE ) = @_;
+    my ( $file, $COMMUNITY, $BASE, $to_del ) = @_;
     my $base_folder = dirname( $file );
     $SNMP::save_descriptions = 1 if ( $DESCR );
     &SNMP::addMibDirs( $base_folder );
