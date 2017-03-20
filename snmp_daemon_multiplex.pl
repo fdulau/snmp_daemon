@@ -1009,10 +1009,12 @@ sub parse_walk
 
     foreach my $ent_full ( keys %enterprises_full )
     {
-        $mib{$ent_full}{type}      = 0;
-        $mib{$ent_full}{access}    = 'ro';
-        $mib{$ent_full}{community} = $COMMUNITY;
-        $mib{$ent_full}{val}       = '';
+        if ( ! exists  $mib{ $ent_full } ) {
+            $mib{$ent_full}{type}      = 0;
+            $mib{$ent_full}{access}    = 'ro';
+            $mib{$ent_full}{community} = $COMMUNITY;
+            $mib{$ent_full}{val}       = '';
+        }
         push @ent_list, $ent_full unless ( $DELETE );
         say( "new ent = <$ent_full>", 5 );
         if ( !$blank )
